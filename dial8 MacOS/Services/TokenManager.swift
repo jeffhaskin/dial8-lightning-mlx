@@ -188,44 +188,51 @@ class TokenManager {
         let refresh_token_expires_in: Int
     }
     
+    // NOTE: Network token refresh disabled - app operates in local-only mode
     private func refreshAccessToken() async throws -> String {
+        // Network requests are disabled for local-only operation
+        print("🔄 Token refresh disabled - app running in local-only mode")
+        throw AuthError.noRefreshToken
+
+        // Original network code (disabled):
+        /*
         print("🔄 Starting token refresh...")
         guard let refreshToken = refreshToken else {
             print("❌ No refresh token found")
             throw AuthError.noRefreshToken
         }
-        
+
         var components = URLComponents()
         components.scheme = "https"
         components.host = ""
         components.path = ""
-        
+
         guard let url = components.url else {
             print("❌ Invalid URL configuration")
             throw URLError(.badURL)
         }
-        
+
         print("🔗 Refresh URL: \(url)")
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.addValue(AppConfig.API_KEY, forHTTPHeaderField: "X-API-Key")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        
+
         // Add refresh token to request body
         let body = ["refresh_token": refreshToken]
         request.httpBody = try? JSONEncoder().encode(body)
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        
+
         guard let httpResponse = response as? HTTPURLResponse else {
             throw AuthError.invalidResponse
         }
-        
+
         if let responseString = String(data: data, encoding: .utf8) {
             print("📥 Raw refresh token response: \(responseString)")
         }
-        
+
         guard httpResponse.statusCode == 200 else {
             print("❌ Server returned error status: \(httpResponse.statusCode)")
             switch httpResponse.statusCode {
@@ -238,7 +245,7 @@ class TokenManager {
                 throw AuthError.serverError
             }
         }
-        
+
         do {
             let tokenResponse = try JSONDecoder().decode(RefreshTokenResponse.self, from: data)
             setTokens(
@@ -255,6 +262,7 @@ class TokenManager {
             }
             throw AuthError.invalidResponse
         }
+        */
     }
     
     func clearTokens() {

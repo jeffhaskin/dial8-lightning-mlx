@@ -57,8 +57,15 @@ class AuthenticationManager: NSObject, ObservableObject {
     // MARK: - Sign In Methods
 
     /// Initiates the Google Sign-In process
+    /// NOTE: Network authentication disabled - app operates in local-only mode
     /// - Parameter presentationAnchor: The window or view controller to present the sign-in interface
     func signInWithGoogle(presentationAnchor: PresentationAnchor) {
+        // Network authentication is disabled for local-only operation
+        logger.info("Google Sign-In disabled - app running in local-only mode")
+        return
+
+        // Original network code (disabled):
+        /*
         logger.info("Starting Google Sign-In process")
         self.presentationAnchor = presentationAnchor
 
@@ -96,6 +103,7 @@ class AuthenticationManager: NSObject, ObservableObject {
         session.presentationContextProvider = self
         session.prefersEphemeralWebBrowserSession = true // Optional: doesn't share cookies with Safari
         session.start()
+        */
     }
 
     /// Handles the redirect after successful authentication
@@ -339,6 +347,9 @@ class AuthenticationManager: NSObject, ObservableObject {
 
     override init() {
         super.init()
+        // Local-only mode: always set authenticated to true
+        self.isAuthenticated = true
+        self.isFirstTimeUser = false
         loadUserProfile()
         loadAccountStatus()
     }

@@ -177,62 +177,12 @@ class UsageManager: ObservableObject {
         defaults.set(0, forKey: syncThresholdKey) // Reset sync threshold to 0
     }
     
+    // NOTE: Network usage sync disabled - app operates in local-only mode
     @MainActor
     private func syncWithServer(wordCount: Int) async throws {
-        guard var components = URLComponents(string: "\(AppConfig.BACKEND_API_URL)/api/v1/account/usage/sync") else {
-            throw URLError(.badURL)
-        }
-        
-        guard let url = components.url else {
-            throw URLError(.badURL)
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(AppConfig.API_KEY, forHTTPHeaderField: "X-API-Key")
-        
-        let token = try await TokenManager.shared.getValidToken()
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
-        // Simplified request body with just word_count
-        let requestDict = [
-            "word_count": wordCount
-        ]
-        
-        let jsonData = try JSONSerialization.data(withJSONObject: requestDict)
-        
-        // Debug: Print the actual JSON string being sent
-        if let jsonString = String(data: jsonData, encoding: .utf8) {
-            print("📤 Sending JSON payload:\n\(jsonString)")
-        }
-        
-        request.httpBody = jsonData
-        
-        let (data, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw URLError(.badServerResponse)
-        }
-        
-        // Add detailed error handling
-        guard httpResponse.statusCode == 200 else {
-            if let errorResponse = String(data: data, encoding: .utf8) {
-                print("❌ Server returned status code: \(httpResponse.statusCode)")
-                print("Error response: \(errorResponse)")
-            }
-            throw URLError(.badServerResponse)
-        }
-        
-        // Update local state from server response
-        if let status = try? JSONDecoder().decode(AccountStatus.self, from: data) {
-            currentWeekUsage = status.current_usage
-            if let limit = status.limit {
-                weeklyLimit = limit
-            } else if status.type == "pro" {
-                weeklyLimit = Int.max  // No limit for pro accounts
-            }
-            accountType = status.type
-        }
+        // Network requests are disabled for local-only operation
+        print("📊 Usage sync disabled - app running in local-only mode")
+        // Just keep usage local, no server sync
+        return
     }
 }

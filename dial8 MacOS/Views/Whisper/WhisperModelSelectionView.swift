@@ -118,8 +118,23 @@ struct WhisperModelSelectionView: View {
                                 Text("Speech to Text Model")
                                     .font(.subheadline)
                                     .fontWeight(.medium)
+
+                                Spacer()
+
+                                // Lightning Whisper MLX badge
+                                HStack(spacing: 4) {
+                                    Image(systemName: "bolt.fill")
+                                        .font(.system(size: 10))
+                                    Text("Lightning Whisper MLX")
+                                        .font(.caption2)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.orange.opacity(0.2))
+                                .foregroundColor(.orange)
+                                .cornerRadius(4)
                             }
-                            
+
                             // Model Selection Dropdown
                             HStack {
                                 Text("Select Model")
@@ -137,22 +152,41 @@ struct WhisperModelSelectionView: View {
                                     whisperManager.selectModel(modelSize: newValue)
                                 }
                             }
-                            
-                            // Show warning if no models are available
-                            if whisperManager.availableModels.allSatisfy({ !$0.isAvailable }) && !whisperManager.isDownloading {
+
+                            // Show warning if lightning-whisper-mlx is not installed
+                            if !whisperManager.isReady {
                                 HStack(spacing: 8) {
                                     Image(systemName: "exclamationmark.triangle.fill")
                                         .foregroundColor(.orange)
                                         .font(.system(size: 14))
-                                    Text("No speech models downloaded. Select a model and click 'Download Model' to enable transcription.")
-                                        .font(.caption)
-                                        .foregroundColor(.orange)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("Lightning Whisper MLX is not installed")
+                                            .font(.caption)
+                                            .foregroundColor(.orange)
+                                        Text("Run: pip install lightning-whisper-mlx")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                            .textSelection(.enabled)
+                                    }
                                 }
                                 .padding(8)
                                 .background(Color.orange.opacity(0.1))
                                 .cornerRadius(6)
+                            } else {
+                                // Ready indicator
+                                HStack(spacing: 8) {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                        .font(.system(size: 14))
+                                    Text("Lightning Whisper MLX is ready. Models are downloaded automatically on first use.")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(8)
+                                .background(Color.green.opacity(0.1))
+                                .cornerRadius(6)
                             }
-                            
+
                             // Model List
                             VStack(alignment: .leading, spacing: 8) {
                                 ForEach(whisperManager.availableModels, id: \.id) { model in
@@ -160,99 +194,45 @@ struct WhisperModelSelectionView: View {
                                         HStack {
                                             Image(systemName: model.displayInfo.icon)
                                                 .font(.system(size: 14))
-                                                .foregroundColor(.blue)
-                                            
+                                                .foregroundColor(model.id == whisperManager.selectedModelSize ? .blue : .secondary)
+
                                             VStack(alignment: .leading, spacing: 2) {
-                                                Text(model.displayInfo.displayName)
-                                                    .font(.subheadline)
-                                                    .fontWeight(.medium)
-                                                
+                                                HStack(spacing: 8) {
+                                                    Text(model.displayInfo.displayName)
+                                                        .font(.subheadline)
+                                                        .fontWeight(model.id == whisperManager.selectedModelSize ? .semibold : .medium)
+
+                                                    if model.id == whisperManager.selectedModelSize {
+                                                        Text("Selected")
+                                                            .font(.caption2)
+                                                            .padding(.horizontal, 6)
+                                                            .padding(.vertical, 2)
+                                                            .background(Color.blue.opacity(0.2))
+                                                            .foregroundColor(.blue)
+                                                            .cornerRadius(4)
+                                                    }
+                                                }
+
                                                 Text(model.displayInfo.description)
                                                     .font(.caption)
                                                     .foregroundColor(.secondary)
                                                     .lineLimit(2)
                                             }
-                                            
+
                                             Spacer()
-                                            
-                                            if model.isAvailable {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: "checkmark.circle.fill")
-                                                        .foregroundColor(.green)
-                                                        .font(.system(size: 12))
-                                                    Text("Ready")
-                                                        .font(.caption)
-                                                        .foregroundColor(.green)
-                                                    
-                                                    Text("|")
-                                                        .foregroundColor(.secondary.opacity(0.5))
-                                                        .font(.caption)
-                                                        .padding(.horizontal, 4)
-                                                    
-                                                    Button(action: {
-                                                        whisperManager.deleteModel(modelSize: model.id)
-                                                    }) {
-                                                        HStack(spacing: 4) {
-                                                            Image(systemName: "trash")
-                                                                .font(.system(size: 12))
-                                                            Text("Remove")
-                                                                .font(.caption)
-                                                        }
-                                                    }
-                                                    .buttonStyle(.borderless)
-                                                    .foregroundColor(.red)
-                                                }
-                                                .padding(.vertical, 4)
-                                                .padding(.horizontal, 8)
-                                                .background(Color.secondary.opacity(0.1))
-                                                .cornerRadius(6)
-                                            } else if whisperManager.isDownloading && model.id == whisperManager.selectedModelSize {
-                                                VStack(alignment: .trailing, spacing: 4) {
-                                                    HStack(spacing: 4) {
-                                                        ProgressView()
-                                                            .scaleEffect(0.5)
-                                                        Text("Downloading...")
-                                                            .font(.caption)
-                                                            .foregroundColor(.secondary)
-                                                    }
-                                                    
-                                                    // Progress bar
-                                                    GeometryReader { geometry in
-                                                        ZStack(alignment: .leading) {
-                                                            Rectangle()
-                                                                .frame(width: geometry.size.width, height: 4)
-                                                                .opacity(0.3)
-                                                                .foregroundColor(.gray)
-                                                            
-                                                            Rectangle()
-                                                                .frame(width: geometry.size.width * CGFloat(whisperManager.downloadProgress), height: 4)
-                                                                .foregroundColor(.blue)
-                                                        }
-                                                        .cornerRadius(2)
-                                                    }
-                                                    .frame(height: 4)
-                                                    .frame(width: 200)
-                                                    
-                                                    Text("\(Int(whisperManager.downloadProgress * 100))%")
-                                                        .font(.caption2)
-                                                        .foregroundColor(.secondary)
-                                                }
-                                            } else {
+
+                                            if model.id != whisperManager.selectedModelSize {
                                                 Button(action: {
-                                                    whisperManager.downloadModel(modelSize: model.id)
+                                                    whisperManager.selectModel(modelSize: model.id)
                                                 }) {
-                                                    HStack(spacing: 4) {
-                                                        Image(systemName: "arrow.down.circle.fill")
-                                                            .font(.system(size: 12))
-                                                        Text("Download")
-                                                            .font(.caption)
-                                                    }
+                                                    Text("Select")
+                                                        .font(.caption)
                                                 }
                                                 .buttonStyle(.borderless)
                                                 .foregroundColor(.blue)
                                             }
                                         }
-                                        
+
                                         if let recommendation = model.displayInfo.recommendation {
                                             Text(recommendation)
                                                 .font(.caption2)
@@ -261,18 +241,22 @@ struct WhisperModelSelectionView: View {
                                         }
                                     }
                                     .padding(.vertical, 4)
-                                    
+                                    .padding(.horizontal, 8)
+                                    .background(model.id == whisperManager.selectedModelSize ? Color.blue.opacity(0.05) : Color.clear)
+                                    .cornerRadius(6)
+
                                     if model.id != whisperManager.availableModels.last?.id {
                                         Divider()
                                     }
                                 }
                             }
-                            
+
                             if let errorMessage = whisperManager.errorMessage {
                                 Text(errorMessage)
                                     .font(.caption)
                                     .foregroundColor(.red)
-                                    .lineLimit(2)
+                                    .lineLimit(3)
+                                    .textSelection(.enabled)
                             }
                         }
                         .padding()

@@ -405,45 +405,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SPUStand
     }
     
     func updater(_ updater: SPUUpdater, failedToDownloadAppcastFromURL url: URL, error: Error) {
-        print("❌ Failed to download appcast from: \(url)")
-        print("❌ Error: \(error.localizedDescription)")
-        
-        // Try to fetch the appcast directly to check its contents
-        let task = URLSession.shared.dataTask(with: url) { data, response, error in
-            if let error = error {
-                print("🌐 Network error: \(error.localizedDescription)")
-                return
-            }
-            
-            if let httpResponse = response as? HTTPURLResponse {
-                print("🌐 HTTP Status: \(httpResponse.statusCode)")
-            }
-            
-            if let data = data, let content = String(data: data, encoding: .utf8) {
-                print("📄 Appcast content:")
-                print(content)
-            }
-        }
-        task.resume()
+        // Network requests are disabled for local-only operation
+        print("❌ Failed to download appcast - network disabled for local-only mode")
     }
 
+    // NOTE: Network appcast checking disabled - app operates in local-only mode
     private func checkAppcastContent(url: URL) {
-        let task = URLSession.shared.dataTask(with: url) { data, response, error in
-            if let error = error {
-                print("❌ Appcast fetch error: \(error.localizedDescription)")
-                return
-            }
-            
-            if let httpResponse = response as? HTTPURLResponse {
-                print("📡 Appcast HTTP Status: \(httpResponse.statusCode)")
-            }
-            
-            if let data = data, let content = String(data: data, encoding: .utf8) {
-                print("📄 Appcast Content:")
-                print(content)
-            }
-        }
-        task.resume()
+        // Network requests are disabled for local-only operation
+        print("📡 Appcast check disabled - app running in local-only mode")
     }
 
     // Add these methods at the bottom of your AppDelegate class

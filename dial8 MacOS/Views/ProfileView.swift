@@ -47,25 +47,13 @@ struct ProfileView: View {
     @Environment(\.colorScheme) var colorScheme
     @State private var showingProfileMenu = false
     @Binding var showSettings: Bool
-    
+
     #if os(macOS)
     // Computed property to access the AppDelegate
     private var appDelegate: AppDelegate? {
         return NSApp.delegate as? AppDelegate
     }
     #endif
-    
-    // Computed property to get user initials
-    private var userInitials: String {
-        guard let fullName = authManager.currentUser?.username else { return "?" }
-        let components = fullName.split(separator: " ")
-        if components.count >= 2 {
-            let firstInitial = components[0].prefix(1)
-            let lastInitial = components[components.count - 1].prefix(1)
-            return "\(firstInitial)\(lastInitial)".uppercased()
-        }
-        return String(fullName.prefix(2)).uppercased()
-    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -76,10 +64,10 @@ struct ProfileView: View {
                     Circle()
                         .fill(Color.blue.opacity(0.8))
                         .frame(width: 28, height: 28)
-                    
-                    Text(userInitials)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.yellow)
+
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white)
                 }
             }
             .buttonStyle(PlainButtonStyle())
@@ -93,23 +81,9 @@ struct ProfileView: View {
                     showSettings = true
                 }) {
                     HStack {
+                        Image(systemName: "gearshape")
+                            .frame(width: 20)
                         Text("Settings")
-                        Spacer()
-                    }
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 16)
-                }
-                .buttonStyle(PlainButtonStyle())
-                
-                Divider()
-                
-                Button(action: {
-                    showingProfileMenu = false  // Close the menu first
-                    // Logout notification removed  // Post logout notification
-                    authManager.signOut()  // Then sign out
-                }) {
-                    HStack {
-                        Text("Log Out")
                         Spacer()
                     }
                     .padding(.vertical, 8)
@@ -162,68 +136,48 @@ struct SettingsView: View {
     #endif
 
     var body: some View {
-        Group {
-            if authManager.isAuthenticated {
-                VStack(spacing: 0) {
-                    // Remove tab selector and replace with a header
-                    HStack {
-                        Text("Settings")
-                            .font(.headline)
-                            .padding(.vertical, 8)
-                            .padding(.horizontal, 12)
-                        Spacer()
-                    }
-                    .padding(.horizontal)
-                    .padding(.top, 8)
-                    .background(
-                        ZStack {
-                            VisualEffectView(
-                                material: .hudWindow,
-                                blendingMode: .behindWindow
-                            )
-                            Color(NSColor.windowBackgroundColor).opacity(0.7)
-                        }
+        VStack(spacing: 0) {
+            // Remove tab selector and replace with a header
+            HStack {
+                Text("Settings")
+                    .font(.headline)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                Spacer()
+            }
+            .padding(.horizontal)
+            .padding(.top, 8)
+            .background(
+                ZStack {
+                    VisualEffectView(
+                        material: .hudWindow,
+                        blendingMode: .behindWindow
                     )
-                    
-                    Divider()
-                    
-                    // Scrollable Content with all sections
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 20) {
-                            // Account Section
-                            accountSection
-                            
-                            // App Section
-                            appSection
-                            
-                            // About Section
-                            aboutSection
-                            
-                            #if DEVELOPMENT
-                            // Developer Section (only in development)
-                            developerSection
-                            #endif
-                        }
-                        .padding()
-                    }
+                    Color(NSColor.windowBackgroundColor).opacity(0.7)
                 }
-                .frame(width: 550, height: 700)
-                .background(Color(NSColor.windowBackgroundColor))
-                .onAppear {
-                    // Check authentication status when the view appears
-                    if !authManager.isAuthenticated {
-                        // Close the settings window if it's open
-                        if let window = NSApp.windows.first(where: { $0.title == "Settings" }) {
-                            window.close()
-                        }
-                    }
-                    
+            )
+
+            Divider()
+
+            // Scrollable Content with all sections
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // App Section
+                    appSection
+
+                    // About Section
+                    aboutSectionLocalOnly
+
+                    #if DEVELOPMENT
+                    // Developer Section (only in development)
+                    developerSection
+                    #endif
                 }
-            } else {
-                Text("Please log in to access settings.")
-                    .foregroundColor(.secondary)
+                .padding()
             }
         }
+        .frame(width: 550, height: 700)
+        .background(Color(NSColor.windowBackgroundColor))
     }
     
     var accountSection: some View {
@@ -267,13 +221,13 @@ struct SettingsView: View {
             GroupBox {
                 VStack(spacing: 0) {
                     SettingsRow(
-                        icon: "app.badge", 
-                        title: "Dial8", 
+                        icon: "app.badge",
+                        title: "Dial8",
                         value: appVersion
                     )
                 }
             }
-            
+
             if authManager.isAuthenticated {
                 Button(action: {
                     // Logout notification removed
@@ -287,6 +241,28 @@ struct SettingsView: View {
                         .cornerRadius(5)
                 }
                 .buttonStyle(PlainButtonStyle())
+            }
+        }
+    }
+
+    // Local-only about section without authentication
+    var aboutSectionLocalOnly: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("About").font(.headline)
+            GroupBox {
+                VStack(spacing: 0) {
+                    SettingsRow(
+                        icon: "app.badge",
+                        title: "Dial8 (Local Edition)",
+                        value: appVersion
+                    )
+                    Divider()
+                    SettingsRow(
+                        icon: "bolt.fill",
+                        title: "Speech Engine",
+                        value: "Lightning Whisper MLX"
+                    )
+                }
             }
         }
     }

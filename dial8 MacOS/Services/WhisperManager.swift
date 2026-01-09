@@ -3,74 +3,38 @@
 //  dial8 MacOS
 //
 //  Created by Liam Alizadeh on 10/18/24.
+//  Modified for Lightning Whisper MLX integration
 //
 
 /// WhisperManager handles all aspects of the Whisper speech recognition system.
 ///
-/// This singleton service provides comprehensive speech recognition functionality:
-///
-/// Core Features:
-/// - Model Management:
-///   • Download and storage of Whisper models
-///   • Model selection and persistence
-///   • Automatic model verification
-///   • Hardware-specific optimizations
+/// This singleton service provides comprehensive speech recognition functionality
+/// using Lightning Whisper MLX for Apple Silicon Macs.
 ///
 /// Supported Models:
-/// - Base: Fast, English-optimized model
-/// - Small: High-accuracy English model
-/// - Medium: Multilingual model
-///
-/// Hardware Support:
-/// - ARM64 (Apple Silicon) optimization
-/// - x86_64 with AVX2 support
-/// - Fallback x86_64 compatibility
-///
-/// Functionality:
-/// - Speech transcription
-/// - Multiple recording modes
-/// - Progress tracking
-/// - Error handling
-/// - Automatic language detection
-///
-/// File Management:
-/// - Secure model storage
-/// - Automatic cleanup
-/// - Download progress tracking
-/// - Model integrity verification
-///
-/// Usage:
-/// ```swift
-/// let manager = WhisperManager.shared
-///
-/// // Download a model
-/// manager.downloadModel(modelSize: "Base")
-///
-/// // Transcribe audio
-/// manager.transcribe(audioURL: url, mode: .transcriptionOnly) { result in
-///     switch result {
-///     case .success(let transcription):
-///         print("Transcription: \(transcription)")
-///     case .failure(let error):
-///         print("Error: \(error)")
-///     }
-/// }
-/// ```
-///
-/// Note: This manager handles hardware-specific optimizations automatically,
-/// selecting the appropriate Whisper executable based on the system architecture.
+/// - tiny: Fastest, lowest accuracy
+/// - small: Good balance of speed and accuracy
+/// - distil-small.en: Optimized English model (default)
+/// - base: Basic model
+/// - medium: Higher accuracy
+/// - distil-medium.en: Optimized medium English model
+/// - large: High accuracy
+/// - large-v2: Improved large model
+/// - distil-large-v2: Optimized large v2
+/// - large-v3: Latest large model
+/// - distil-large-v3: Optimized large v3
 
 import Foundation
 import Combine
-import AppKit  // Add AppKit import for NSWorkspace and NSApplication
+import AppKit
 
-// Move ModelDisplayInfo to WhisperManager since it's model-related metadata
+// Model display information for UI
 struct ModelDisplayInfo {
     let id: String
     let displayName: String
     let icon: String
     let description: String
-    let recommendation: String?  // Optional recommendation text
+    let recommendation: String?
 }
 
 struct WhisperModelInfo: Identifiable {
@@ -82,7 +46,6 @@ struct WhisperModelInfo: Identifiable {
     var isAvailable: Bool
     var isSelected: Bool
     let description: String
-    // Add display info
     var displayInfo: ModelDisplayInfo
 }
 
@@ -91,7 +54,7 @@ struct WhisperTranscriptionSegment {
     let startTime: TimeInterval
     let endTime: TimeInterval
     let text: String
-    
+
     var duration: TimeInterval {
         return endTime - startTime
     }
@@ -106,127 +69,75 @@ class WhisperManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
     @Published var isReady = false
     @Published var errorMessage: String?
     @Published var availableModels: [WhisperModelInfo] = []
-    @Published var selectedModelSize: String = "Small"  // Changed from "Base" to "Small"
+    @Published var selectedModelSize: String = "distil-small.en"  // Default to distil-small.en
 
     // Process management
     private var processQueue = DispatchQueue(label: "com.dial8.whisper.process", qos: .userInitiated)
     private let processLock = NSLock()
-    private var preloadedModel: URL?
-    private var preloadedModelSize: String?
-    private var isPreloading = false
     private var lastModelUseTime: Date?
     private let modelReloadThreshold: TimeInterval = 300 // 5 minutes
 
-    var whisperModelURL: URL?
-    private var modelFileName: String = ""
     private var cancellables = Set<AnyCancellable>()
-
-    // Computed property to get the local URL for the selected model
-    private var modelLocalURL: URL {
-        getModelDirectory().appendingPathComponent(modelFileName)
-    }
-
-    private var downloadSession: URLSession?
-    private var downloadTask: URLSessionDownloadTask?
 
     weak var globalHotkeyManager: GlobalHotkeyManager?
 
-    // Add model display mapping as a static property
-    private static let modelDisplayInfo: [String: ModelDisplayInfo] = [
-        "Small": ModelDisplayInfo(
-            id: "Small",
-            displayName: "Small",
-            icon: "scope",
-            description: "Higher accuracy with slightly longer processing time. Ideal when precision matters most.",
-            recommendation: "Best accuracy for English"
-        ),
-        "largev3": ModelDisplayInfo(
-            id: "largev3",
-            displayName: "Large V3",
-            icon: "star.circle",
-            description: "Highest accuracy model for professional transcription and complex audio.",
-            recommendation: "Best for professional use"
-        ),
-        "largev3turbo": ModelDisplayInfo(
-            id: "largev3turbo",
-            displayName: "Large V3 Turbo",
-            icon: "bolt.star.circle",
-            description: "Optimized large model with faster processing while maintaining high accuracy.",
-            recommendation: "Best balance of speed and accuracy"
-        )
+    // Lightning Whisper MLX model definitions
+    private static let lightningWhisperModels: [(id: String, displayName: String, description: String, recommendation: String?, icon: String)] = [
+        ("tiny", "Tiny", "Fastest model with basic accuracy. Good for quick transcriptions.", nil, "hare"),
+        ("base", "Base", "Basic model with reasonable accuracy.", nil, "tortoise"),
+        ("small", "Small", "Good balance of speed and accuracy.", nil, "speedometer"),
+        ("distil-small.en", "Distil Small (English)", "Optimized English model. Fast and accurate for English speech.", "Recommended for English", "star.circle"),
+        ("medium", "Medium", "Higher accuracy with moderate speed.", nil, "gauge.with.dots.needle.50percent"),
+        ("distil-medium.en", "Distil Medium (English)", "Optimized medium English model. Better accuracy for English.", nil, "star.circle.fill"),
+        ("large", "Large", "High accuracy model. Slower but more accurate.", nil, "scalemass"),
+        ("large-v2", "Large V2", "Improved large model with better accuracy.", nil, "scalemass.fill"),
+        ("distil-large-v2", "Distil Large V2", "Optimized large v2. Good accuracy with better speed.", nil, "bolt.circle"),
+        ("large-v3", "Large V3", "Latest large model. Highest accuracy.", nil, "crown"),
+        ("distil-large-v3", "Distil Large V3", "Optimized large v3. Best balance of accuracy and speed.", "Best for professional use", "crown.fill")
     ]
 
     override init() {
         super.init()
         loadSelectedModel()
         loadAvailableModels()
-        preloadSelectedModel()
         setupNotifications()
-    }
-
-    deinit {
-        // No special cleanup needed anymore
-    }
-
-    // Get or create the directory for storing Whisper models
-    private func getModelDirectory() -> URL {
-        let applicationSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let modelDirectory = applicationSupport.appendingPathComponent("Whisper")
-        if !FileManager.default.fileExists(atPath: modelDirectory.path) {
-            try? FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
-        }
-        return modelDirectory
+        // Check if Python and lightning-whisper-mlx are available
+        checkPythonEnvironment()
     }
 
     // Load the previously selected model from UserDefaults
     private func loadSelectedModel() {
-        // Always use Small model instead of Base
-        selectedModelSize = "Small"
-        // Save this to UserDefaults
-        UserDefaults.standard.setValue(selectedModelSize, forKey: "SelectedWhisperModel")
+        if let savedModel = UserDefaults.standard.string(forKey: "SelectedWhisperModel") {
+            selectedModelSize = savedModel
+        } else {
+            // Default to distil-small.en
+            selectedModelSize = "distil-small.en"
+            UserDefaults.standard.setValue(selectedModelSize, forKey: "SelectedWhisperModel")
+        }
     }
 
     // Load information about available Whisper models
     private func loadAvailableModels() {
-        // Include Small, largev3, and largev3turbo models
-        let models = [
-            ("Small", "ggml-small.bin"),
-            ("largev3", "ggml-large-v3.bin"),
-            ("largev3turbo", "ggml-large-v3-turbo.bin")
-        ]
-
         var modelsInfo: [WhisperModelInfo] = []
-        var selectedModelAvailable = false
 
-        for (size, fileName) in models {
-            let fileURL = getModelDirectory().appendingPathComponent(fileName)
-            let isAvailable = FileManager.default.fileExists(atPath: fileURL.path)
-            let fileSize = isAvailable ? (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? UInt64) ?? 0 : 0
-            let sizeString = isAvailable ? ByteCountFormatter.string(fromByteCount: Int64(fileSize), countStyle: .file) : ""
-            let isSelected = size == selectedModelSize
-
-            if isSelected {
-                selectedModelAvailable = true
-            }
-
-            // Get display info from static mapping
-            let displayInfo = Self.modelDisplayInfo[size] ?? ModelDisplayInfo(
-                id: size,
-                displayName: "Unknown Model",
-                icon: "questionmark.circle",
-                description: "Unknown model type.",
-                recommendation: nil
+        for model in Self.lightningWhisperModels {
+            let displayInfo = ModelDisplayInfo(
+                id: model.id,
+                displayName: model.displayName,
+                icon: model.icon,
+                description: model.description,
+                recommendation: model.recommendation
             )
 
             let modelInfo = WhisperModelInfo(
-                id: size,
-                name: displayInfo.displayName, // Use display name instead of default name
-                fileName: fileName,
-                size: sizeString,
-                fileSize: fileSize,
-                isAvailable: isAvailable,
-                isSelected: isSelected,
-                description: displayInfo.description,
+                id: model.id,
+                name: model.displayName,
+                fileName: model.id, // Lightning Whisper MLX uses model ID directly
+                size: "",
+                fileSize: 0,
+                isAvailable: true, // Models are downloaded on-demand by lightning-whisper-mlx
+                isSelected: model.id == selectedModelSize,
+                description: model.description,
                 displayInfo: displayInfo
             )
 
@@ -235,188 +146,108 @@ class WhisperManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
 
         DispatchQueue.main.async {
             self.availableModels = modelsInfo
-            self.isReady = selectedModelAvailable
+            self.isReady = true
+        }
+    }
+
+    // Check if Python environment is set up correctly
+    private func checkPythonEnvironment() {
+        processQueue.async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            process.arguments = ["-c", "from lightning_whisper_mlx import LightningWhisperMLX; print('OK')"]
+
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? ""
+
+                DispatchQueue.main.async {
+                    if process.terminationStatus == 0 && output.contains("OK") {
+                        print("✅ Lightning Whisper MLX is available")
+                        self?.isReady = true
+                        self?.errorMessage = nil
+                    } else {
+                        print("⚠️ Lightning Whisper MLX not found")
+                        self?.isReady = false
+                        self?.errorMessage = "Lightning Whisper MLX is not installed. Run: pip install lightning-whisper-mlx"
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    print("❌ Failed to check Python environment: \(error)")
+                    self?.isReady = false
+                    self?.errorMessage = "Python3 not found. Please install Python 3 and lightning-whisper-mlx."
+                }
+            }
         }
     }
 
     // Start the setup process for a given model size
     func startSetup(modelSize: String? = nil) {
-        // Use provided model size or default to Small
-        selectedModelSize = modelSize ?? "Small"
+        selectedModelSize = modelSize ?? "distil-small.en"
         UserDefaults.standard.setValue(selectedModelSize, forKey: "SelectedWhisperModel")
-        
-        // Update the UI state
-        isReady = availableModels.first(where: { $0.id == selectedModelSize })?.isAvailable ?? false
-        
-        // Reload models to update UI
         loadAvailableModels()
+        checkPythonEnvironment()
     }
 
-    // Download the specified Whisper model
+    // Download model - Lightning Whisper MLX downloads models automatically on first use
     func downloadModel(modelSize: String) {
-        // Map model size to file name
-        let fileName: String
-        switch modelSize {
-        case "Small":
-            fileName = "ggml-small.bin"
-        case "largev3":
-            fileName = "ggml-large-v3.bin"
-        case "largev3turbo":
-            fileName = "ggml-large-v3-turbo.bin"
-        default:
-            fileName = "ggml-small.bin" // Default fallback
+        // Lightning Whisper MLX downloads models automatically when first used
+        // This function now just selects the model and verifies the environment
+        DispatchQueue.main.async {
+            self.selectModel(modelSize: modelSize)
+            self.isDownloading = false
+            self.downloadProgress = 1.0
         }
-        
-        let urlString = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(fileName)"
-        guard let url = URL(string: urlString) else { return }
-
-        isDownloading = true
-        downloadProgress = 0.0
-        whisperModelURL = url
-        modelFileName = fileName
-
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-        let task = session.downloadTask(with: url)
-        task.resume()
     }
 
     // Select a different Whisper model
     func selectModel(modelSize: String) {
-        // Use the provided model size
         selectedModelSize = modelSize
         UserDefaults.standard.setValue(selectedModelSize, forKey: "SelectedWhisperModel")
         loadAvailableModels()
-        preloadSelectedModel() // Preload the newly selected model
     }
 
-    // Delete a downloaded Whisper model
+    // Delete a downloaded Whisper model - not applicable for lightning-whisper-mlx
+    // Models are managed by the library itself
     func deleteModel(modelSize: String) {
-        guard let modelInfo = availableModels.first(where: { $0.id == modelSize }) else { return }
-
-        let fileURL = getModelDirectory().appendingPathComponent(modelInfo.fileName)
-        do {
-            try FileManager.default.removeItem(at: fileURL)
-            if selectedModelSize == modelSize {
-                selectedModelSize = ""
-                isReady = false
-                UserDefaults.standard.setValue(selectedModelSize, forKey: "SelectedWhisperModel")
-                
-                // Clear preloaded model state
-                preloadedModel = nil
-                preloadedModelSize = nil
-            }
-            loadAvailableModels()
-        } catch {
-            DispatchQueue.main.async {
-                self.errorMessage = "Failed to delete model: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    private func preloadSelectedModel() {
-        processQueue.async { [weak self] in
-            guard let self = self else { return }
-            self.processLock.lock()
-            defer { self.processLock.unlock() }
-
-            // Skip if already preloading or if no model is selected
-            guard !self.isPreloading, 
-                  let selectedModel = self.availableModels.first(where: { $0.id == self.selectedModelSize }) else {
-                return
-            }
-
-            self.isPreloading = true
-
-            let modelPath = self.getModelDirectory().appendingPathComponent(selectedModel.fileName)
-            guard FileManager.default.fileExists(atPath: modelPath.path) else {
-                print("Model file does not exist at path: \(modelPath.path)")
-                self.isPreloading = false
-                return
-            }
-
-            // Create a temporary process to preload the model
-            guard let whisperURL = self.getWhisperExecutable() else {
-                print("Whisper executable not found")
-                self.isPreloading = false
-                return
-            }
-
-            let process = Process()
-            process.executableURL = whisperURL
-            
-            // Set up a temporary file for testing
-            let tempDir = FileManager.default.temporaryDirectory
-            let testFile = tempDir.appendingPathComponent("preload_test.txt")
-            
-            // Write a small test file
-            try? "test".write(to: testFile, atomically: true, encoding: .utf8)
-
-            // Configure process for preloading
-            process.arguments = [
-                "-m", modelPath.path,
-                "-f", testFile.path,
-                "--no-timestamps",
-                "--language", "auto"
-            ]
-
-            let outputPipe = Pipe()
-            process.standardOutput = outputPipe
-            process.standardError = outputPipe
-
-            do {
-                try process.run()
-                process.waitUntilExit()
-                
-                // Clean up test file
-                try? FileManager.default.removeItem(at: testFile)
-
-                if process.terminationStatus == 0 {
-                    print("Model preloaded successfully: \(selectedModel.fileName)")
-                    self.preloadedModel = modelPath
-                    self.preloadedModelSize = selectedModel.id
-                    DispatchQueue.main.async {
-                        self.isReady = true
-                    }
-                } else {
-                    print("Failed to preload model")
-                    self.preloadedModel = nil
-                    self.preloadedModelSize = nil
-                }
-            } catch {
-                print("Error preloading model: \(error)")
-                self.preloadedModel = nil
-                self.preloadedModelSize = nil
-            }
-
-            self.isPreloading = false
+        // Lightning Whisper MLX manages its own model cache
+        // This is a no-op for now, but we could add cache clearing functionality
+        DispatchQueue.main.async {
+            self.errorMessage = "Model cache is managed by Lightning Whisper MLX. Clear cache manually if needed."
         }
     }
 
     private func setupNotifications() {
         #if os(macOS)
-        // Register for sleep/wake notifications
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
             selector: #selector(handleSleepNotification(_:)),
             name: NSWorkspace.willSleepNotification,
             object: nil as Any?
         )
-        
+
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
             selector: #selector(handleWakeNotification(_:)),
             name: NSWorkspace.didWakeNotification,
             object: nil as Any?
         )
-        
-        // Register for app state changes
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleAppStateChange(_:)),
             name: NSApplication.willResignActiveNotification,
             object: nil as Any?
         )
-        
+
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleAppStateChange(_:)),
@@ -427,59 +258,33 @@ class WhisperManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
     }
 
     @objc private func handleSleepNotification(_ notification: Notification) {
-        print("💤 System going to sleep - clearing model state")
-        processLock.lock()
-        defer { processLock.unlock() }
-        
-        preloadedModel = nil
-        preloadedModelSize = nil
+        print("💤 System going to sleep")
         lastModelUseTime = nil
     }
 
     @objc private func handleWakeNotification(_ notification: Notification) {
-        print("⚡️ System waking up - preloading model")
-        preloadSelectedModel()
+        print("⚡️ System waking up")
     }
 
     @objc private func handleAppStateChange(_ notification: Notification) {
         if notification.name == NSApplication.willResignActiveNotification {
             print("📱 App entering background")
-            // No immediate action needed, we'll check state when used
         } else if notification.name == NSApplication.didBecomeActiveNotification {
-            print("📱 App becoming active - verifying model state")
-            verifyModelState()
+            print("📱 App becoming active")
         }
     }
 
-    private func verifyModelState() {
-        processLock.lock()
-        defer { processLock.unlock() }
-        
-        // Check if we need to reload based on time threshold
-        if let lastUse = lastModelUseTime,
-           Date().timeIntervalSince(lastUse) > modelReloadThreshold {
-            print("⚠️ Model state expired - reloading")
-            preloadedModel = nil
-            preloadedModelSize = nil
-            preloadSelectedModel()
-        }
+    // Get the path to the Python transcription script
+    private func getPythonScriptPath() -> URL? {
+        return Bundle.main.url(forResource: "lightning_whisper_transcribe", withExtension: "py")
     }
 
     func transcribe(audioURL: URL, mode: RecordingMode, targetLanguage: String? = nil, completion: @escaping (Result<String, Error>) -> Void) {
-        // Update last use time
         lastModelUseTime = Date()
-        
-        // Verify model state before proceeding
-        verifyModelState()
-        
-        guard isReady else {
-            completion(.failure(NSError(domain: "WhisperManager", code: 0, userInfo: [NSLocalizedDescriptionKey: "Model is not ready"])))
-            return
-        }
 
-        // Ensure we have the correct model loaded
-        if preloadedModelSize != selectedModelSize {
-            preloadSelectedModel()
+        guard isReady else {
+            completion(.failure(NSError(domain: "WhisperManager", code: 0, userInfo: [NSLocalizedDescriptionKey: "Lightning Whisper MLX is not ready. Please check Python installation."])))
+            return
         }
 
         processQueue.async { [weak self] in
@@ -487,47 +292,70 @@ class WhisperManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
             self.processLock.lock()
             defer { self.processLock.unlock() }
 
-            guard let modelURL = self.preloadedModel else {
-                DispatchQueue.main.async {
-                    completion(.failure(NSError(domain: "WhisperManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Model not preloaded"])))
-                }
-                return
-            }
-
             // Create a temporary directory for this transcription
             let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("whisper_\(UUID().uuidString)")
             try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
             let outputFile = tempDir.appendingPathComponent("transcription")
 
             let process = Process()
-            process.executableURL = self.getWhisperExecutable()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
 
-            // Set up pipes for output
-            let outputPipe = Pipe()
-            process.standardOutput = outputPipe
-            process.standardError = outputPipe
-
-            // Configure arguments based on mode - NOTE: Whisper automatically adds .txt extension to output file
+            // Get the script path from bundle or use inline Python
             var arguments = [
-                "-m", modelURL.path,
-                "-otxt",
-                "--no-timestamps",
-                "-t", "8",  // Use 8 threads for faster processing on Apple Silicon
-                "-p", "1",  // Single processor for better latency
-                "-bs", "5", // Reduce beam size for faster processing (default is 5)
-                "--best-of", "1", // Reduce best-of candidates for speed
-                "-of", outputFile.path,
-                audioURL.path
+                "-c",
+                """
+                import sys
+                import os
+
+                try:
+                    from lightning_whisper_mlx import LightningWhisperMLX
+                except ImportError:
+                    print("Error: lightning-whisper-mlx not installed", file=sys.stderr)
+                    sys.exit(1)
+
+                model_name = sys.argv[1]
+                audio_path = sys.argv[2]
+                output_path = sys.argv[3]
+                language = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != 'auto' else None
+
+                try:
+                    whisper = LightningWhisperMLX(model=model_name, batch_size=12, quant=None)
+                    result = whisper.transcribe(audio_path=audio_path, language=language)
+
+                    if isinstance(result, dict):
+                        text = result.get('text', '')
+                    else:
+                        text = str(result)
+
+                    text = text.strip()
+
+                    with open(output_path + '.txt', 'w', encoding='utf-8') as f:
+                        f.write(text)
+
+                    print("OK")
+                except Exception as e:
+                    print(f"Error: {str(e)}", file=sys.stderr)
+                    sys.exit(1)
+                """,
+                self.selectedModelSize,
+                audioURL.path,
+                outputFile.path
             ]
 
-            switch mode {
-            case .transcriptionOnly:
-                arguments += ["--language", targetLanguage ?? "auto"]
-            // case .meetingTranscription has been removed - all transcriptions use the same settings
+            // Add language if specified
+            if let lang = targetLanguage, lang != "auto" {
+                arguments.append(lang)
+            } else {
+                arguments.append("auto")
             }
 
             process.arguments = arguments
             process.currentDirectoryURL = tempDir
+
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = errorPipe
 
             do {
                 try process.run()
@@ -535,36 +363,20 @@ class WhisperManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
 
                 let exitCode = process.terminationStatus
                 if exitCode != 0 {
-                    let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                    let output = String(data: outputData, encoding: .utf8) ?? ""
-                    throw NSError(domain: "WhisperManager", code: Int(exitCode), 
-                                userInfo: [NSLocalizedDescriptionKey: "Process failed: \(output)"])
+                    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    let errorOutput = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+                    throw NSError(domain: "WhisperManager", code: Int(exitCode),
+                                userInfo: [NSLocalizedDescriptionKey: "Transcription failed: \(errorOutput)"])
                 }
 
-                // Read the transcription - Whisper adds .txt extension automatically
+                // Read the transcription
                 let transcriptionFile = outputFile.appendingPathExtension("txt")
-                
-                // Check if file exists before trying to read it
+
                 if !FileManager.default.fileExists(atPath: transcriptionFile.path) {
-                    print("Warning: Transcription file not found at expected path: \(transcriptionFile.path)")
-                    print("Directory contents:")
-                    if let contents = try? FileManager.default.contentsOfDirectory(atPath: tempDir.path) {
-                        print(contents.joined(separator: ", "))
-                    }
-                    
-                    // Try to read from process output instead
-                    let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                    if let output = String(data: outputData, encoding: .utf8), !output.isEmpty {
-                        print("Using process output for transcription instead")
-                        throw NSError(domain: "WhisperManager", code: 404, 
-                                    userInfo: [NSLocalizedDescriptionKey: "Transcription file not found, but process output available: \(output)"])
-                    }
-                    
-                    throw NSError(domain: "WhisperManager", code: 404, 
-                                userInfo: [NSLocalizedDescriptionKey: "Transcription file not found at: \(transcriptionFile.path)"])
+                    throw NSError(domain: "WhisperManager", code: 404,
+                                userInfo: [NSLocalizedDescriptionKey: "Transcription file not found"])
                 }
-                
-                // Read the transcription file
+
                 let transcription = try String(contentsOf: transcriptionFile, encoding: .utf8)
 
                 // Clean up
@@ -586,7 +398,6 @@ class WhisperManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
                     completion(.success(filteredTranscription))
                 }
             } catch {
-                // Clean up on error
                 try? FileManager.default.removeItem(at: tempDir)
                 DispatchQueue.main.async {
                     completion(.failure(error))
@@ -594,23 +405,14 @@ class WhisperManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
             }
         }
     }
-    
-    /// Transcribe audio with timestamps for meeting mode
-    func transcribeWithTimestamps(audioURL: URL, recordingStartTime: Date, targetLanguage: String? = nil, completion: @escaping (Result<[WhisperTranscriptionSegment], Error>) -> Void) {
-        // Update last use time
-        lastModelUseTime = Date()
-        
-        // Verify model state before proceeding
-        verifyModelState()
-        
-        guard isReady else {
-            completion(.failure(NSError(domain: "WhisperManager", code: 0, userInfo: [NSLocalizedDescriptionKey: "Model is not ready"])))
-            return
-        }
 
-        // Ensure we have the correct model loaded
-        if preloadedModelSize != selectedModelSize {
-            preloadSelectedModel()
+    /// Transcribe audio with timestamps
+    func transcribeWithTimestamps(audioURL: URL, recordingStartTime: Date, targetLanguage: String? = nil, completion: @escaping (Result<[WhisperTranscriptionSegment], Error>) -> Void) {
+        lastModelUseTime = Date()
+
+        guard isReady else {
+            completion(.failure(NSError(domain: "WhisperManager", code: 0, userInfo: [NSLocalizedDescriptionKey: "Lightning Whisper MLX is not ready"])))
+            return
         }
 
         processQueue.async { [weak self] in
@@ -618,37 +420,61 @@ class WhisperManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
             self.processLock.lock()
             defer { self.processLock.unlock() }
 
-            guard let modelURL = self.preloadedModel else {
-                DispatchQueue.main.async {
-                    completion(.failure(NSError(domain: "WhisperManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Model not preloaded"])))
-                }
-                return
-            }
-
-            // Create a temporary directory for this transcription
             let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("whisper_\(UUID().uuidString)")
             try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
             let outputFile = tempDir.appendingPathComponent("transcription")
 
             let process = Process()
-            process.executableURL = self.getWhisperExecutable()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
 
-            // Set up pipes for output
-            let outputPipe = Pipe()
-            process.standardOutput = outputPipe
-            process.standardError = outputPipe
+            var arguments = [
+                "-c",
+                """
+                import sys
+                import json
 
-            // Configure arguments for timestamped output (SRT format for easy parsing)
-            let arguments = [
-                "-m", modelURL.path,
-                "-osrt",  // Output SRT format for timestamps
-                "-of", outputFile.path,
-                "--language", targetLanguage ?? "auto",
-                audioURL.path
+                try:
+                    from lightning_whisper_mlx import LightningWhisperMLX
+                except ImportError:
+                    print("Error: lightning-whisper-mlx not installed", file=sys.stderr)
+                    sys.exit(1)
+
+                model_name = sys.argv[1]
+                audio_path = sys.argv[2]
+                output_path = sys.argv[3]
+                language = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != 'auto' else None
+
+                try:
+                    whisper = LightningWhisperMLX(model=model_name, batch_size=12, quant=None)
+                    result = whisper.transcribe(audio_path=audio_path, language=language)
+
+                    # Save full result as JSON for timestamp parsing
+                    with open(output_path + '.json', 'w', encoding='utf-8') as f:
+                        json.dump(result, f, ensure_ascii=False)
+
+                    print("OK")
+                except Exception as e:
+                    print(f"Error: {str(e)}", file=sys.stderr)
+                    sys.exit(1)
+                """,
+                self.selectedModelSize,
+                audioURL.path,
+                outputFile.path
             ]
+
+            if let lang = targetLanguage, lang != "auto" {
+                arguments.append(lang)
+            } else {
+                arguments.append("auto")
+            }
 
             process.arguments = arguments
             process.currentDirectoryURL = tempDir
+
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = errorPipe
 
             do {
                 try process.run()
@@ -656,39 +482,58 @@ class WhisperManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
 
                 let exitCode = process.terminationStatus
                 if exitCode != 0 {
-                    let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                    let output = String(data: outputData, encoding: .utf8) ?? ""
-                    throw NSError(domain: "WhisperManager", code: Int(exitCode), 
-                                userInfo: [NSLocalizedDescriptionKey: "Process failed: \(output)"])
+                    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    let errorOutput = String(data: errorData, encoding: .utf8) ?? "Unknown error"
+                    throw NSError(domain: "WhisperManager", code: Int(exitCode),
+                                userInfo: [NSLocalizedDescriptionKey: "Transcription failed: \(errorOutput)"])
                 }
 
-                // Read the SRT file - Whisper adds .srt extension automatically
-                let srtFile = outputFile.appendingPathExtension("srt")
-                
-                // Check if file exists before trying to read it
-                if !FileManager.default.fileExists(atPath: srtFile.path) {
-                    print("Warning: SRT file not found at expected path: \(srtFile.path)")
-                    print("Directory contents:")
-                    if let contents = try? FileManager.default.contentsOfDirectory(atPath: tempDir.path) {
-                        print(contents.joined(separator: ", "))
+                let jsonFile = outputFile.appendingPathExtension("json")
+
+                if !FileManager.default.fileExists(atPath: jsonFile.path) {
+                    throw NSError(domain: "WhisperManager", code: 404,
+                                userInfo: [NSLocalizedDescriptionKey: "Transcription JSON file not found"])
+                }
+
+                let jsonData = try Data(contentsOf: jsonFile)
+                let result = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any]
+
+                var segments: [WhisperTranscriptionSegment] = []
+
+                // Parse segments if available
+                if let segmentArray = result?["segments"] as? [[String: Any]] {
+                    for segment in segmentArray {
+                        if let start = segment["start"] as? Double,
+                           let end = segment["end"] as? Double,
+                           let text = segment["text"] as? String {
+                            let cleanedText = self.cleanTranscriptionText(text)
+                            if !cleanedText.isEmpty {
+                                segments.append(WhisperTranscriptionSegment(
+                                    startTime: start,
+                                    endTime: end,
+                                    text: cleanedText
+                                ))
+                            }
+                        }
                     }
-                    
-                    throw NSError(domain: "WhisperManager", code: 404, 
-                                userInfo: [NSLocalizedDescriptionKey: "SRT file not found at: \(srtFile.path)"])
+                } else if let text = result?["text"] as? String {
+                    // Fallback: single segment with full text
+                    let cleanedText = self.cleanTranscriptionText(text)
+                    if !cleanedText.isEmpty {
+                        segments.append(WhisperTranscriptionSegment(
+                            startTime: 0,
+                            endTime: 0,
+                            text: cleanedText
+                        ))
+                    }
                 }
-                
-                // Read and parse the SRT file
-                let srtContent = try String(contentsOf: srtFile, encoding: .utf8)
-                let segments = self.parseSRTContent(srtContent, recordingStartTime: recordingStartTime)
 
-                // Clean up
                 try? FileManager.default.removeItem(at: tempDir)
 
                 DispatchQueue.main.async {
                     completion(.success(segments))
                 }
             } catch {
-                // Clean up on error
                 try? FileManager.default.removeItem(at: tempDir)
                 DispatchQueue.main.async {
                     completion(.failure(error))
@@ -696,109 +541,7 @@ class WhisperManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
             }
         }
     }
-    
-    /// Parse SRT content into WhisperTranscriptionSegment objects
-    private func parseSRTContent(_ srtContent: String, recordingStartTime: Date) -> [WhisperTranscriptionSegment] {
-        var segments: [WhisperTranscriptionSegment] = []
-        let lines = srtContent.components(separatedBy: .newlines)
-        
-        var currentIndex = 0
-        while currentIndex < lines.count {
-            let line = lines[currentIndex].trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            // Skip empty lines
-            if line.isEmpty {
-                currentIndex += 1
-                continue
-            }
-            
-            // Look for sequence number (should be a number)
-            if Int(line) != nil {
-                // Next line should be timestamp
-                if currentIndex + 1 < lines.count {
-                    let timestampLine = lines[currentIndex + 1]
-                    
-                    // Parse timestamp line (format: "00:00:01,234 --> 00:00:03,456")
-                    if let (startTime, endTime) = parseTimestamp(timestampLine) {
-                        // Collect text lines until we hit the next sequence number or end
-                        var textLines: [String] = []
-                        var textIndex = currentIndex + 2
-                        
-                        while textIndex < lines.count {
-                            let textLine = lines[textIndex].trimmingCharacters(in: .whitespacesAndNewlines)
-                            if textLine.isEmpty || Int(textLine) != nil {
-                                break
-                            }
-                            textLines.append(textLine)
-                            textIndex += 1
-                        }
-                        
-                        // Create segment with cleaned text
-                        let fullText = textLines.joined(separator: " ")
-                        let cleanedText = cleanTranscriptionText(fullText)
-                        
-                        if !cleanedText.isEmpty {
-                            let segment = WhisperTranscriptionSegment(
-                                startTime: startTime,
-                                endTime: endTime,
-                                text: cleanedText
-                            )
-                            segments.append(segment)
-                        }
-                        
-                        currentIndex = textIndex
-                    } else {
-                        currentIndex += 1
-                    }
-                } else {
-                    currentIndex += 1
-                }
-            } else {
-                currentIndex += 1
-            }
-        }
-        
-        return segments
-    }
-    
-    /// Parse SRT timestamp line into start and end times (in seconds)
-    private func parseTimestamp(_ timestampLine: String) -> (TimeInterval, TimeInterval)? {
-        // Format: "00:00:01,234 --> 00:00:03,456"
-        let components = timestampLine.components(separatedBy: " --> ")
-        guard components.count == 2 else { return nil }
-        
-        guard let startTime = parseSRTTime(components[0]),
-              let endTime = parseSRTTime(components[1]) else {
-            return nil
-        }
-        
-        return (startTime, endTime)
-    }
-    
-    /// Parse SRT time format into seconds
-    private func parseSRTTime(_ timeString: String) -> TimeInterval? {
-        // Format: "00:00:01,234"
-        let cleaned = timeString.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = cleaned.components(separatedBy: ",")
-        guard parts.count == 2 else { return nil }
-        
-        let timePart = parts[0]
-        guard let milliseconds = Int(parts[1]) else { return nil }
-        
-        let timeComponents = timePart.components(separatedBy: ":")
-        guard timeComponents.count == 3,
-              let hours = Int(timeComponents[0]),
-              let minutes = Int(timeComponents[1]),
-              let seconds = Int(timeComponents[2]) else {
-            return nil
-        }
-        
-        let totalSeconds = TimeInterval(hours * 3600 + minutes * 60 + seconds)
-        let totalMilliseconds = totalSeconds + TimeInterval(milliseconds) / 1000.0
-        
-        return totalMilliseconds
-    }
-    
+
     /// Clean transcription text by removing unwanted patterns
     private func cleanTranscriptionText(_ text: String) -> String {
         return text
@@ -807,86 +550,26 @@ class WhisperManager: NSObject, ObservableObject, URLSessionDownloadDelegate {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - URLSessionDownloadDelegate Methods
+    // MARK: - URLSessionDownloadDelegate Methods (kept for compatibility but not used)
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        do {
-            let fileManager = FileManager.default
-
-            // Use getFileName(for:) to get the destination file name
-            let destinationFileName = getFileName(for: downloadTask.originalRequest?.url)
-            let destinationURL = getModelDirectory().appendingPathComponent(destinationFileName)
-
-            // Remove existing file if necessary
-            if fileManager.fileExists(atPath: destinationURL.path) {
-                try fileManager.removeItem(at: destinationURL)
-            }
-
-            // Move the file from the temporary location to the destination URL
-            try fileManager.moveItem(at: location, to: destinationURL)
-
-            DispatchQueue.main.async {
-                self.isDownloading = false
-                self.downloadProgress = 1.0
-                self.isReady = true
-                
-                // Automatically select the newly downloaded model
-                if let modelSize = self.availableModels.first(where: { $0.fileName == destinationFileName })?.id {
-                    self.selectModel(modelSize: modelSize)
-                }
-                
-                self.loadAvailableModels()  // Update available models
-            }
-        } catch {
-            DispatchQueue.main.async {
-                self.errorMessage = error.localizedDescription
-                self.isDownloading = false
-            }
-        }
+        // Not used with Lightning Whisper MLX
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error = error {
-            DispatchQueue.main.async {
-                self.errorMessage = error.localizedDescription
-                self.isDownloading = false
-            }
-        }
+        // Not used with Lightning Whisper MLX
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didWriteData bytesWritten: Int64,
                     totalBytesWritten: Int64,
                     totalBytesExpectedToWrite: Int64) {
-        let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
-        DispatchQueue.main.async {
-            self.downloadProgress = progress
-        }
-    }
-
-    // Helper functions to get URLs and file names...
-
-    private func getFileName(for url: URL?) -> String {
-        return url?.lastPathComponent ?? "downloaded_file"
-    }
-
-    private func detectCPUCapabilities() -> (architecture: String, features: Set<String>) {
-        #if arch(arm64)
-        return ("arm64", ["neon", "arm64"])
-        #else
-        // Only support Apple Silicon
-        fatalError("This application only supports Apple Silicon Macs")
-        #endif
-    }
-
-    private func getWhisperExecutable() -> URL? {
-        // Only support Apple Silicon executable
-        return Bundle.main.url(forResource: "whisper", withExtension: nil)
+        // Not used with Lightning Whisper MLX
     }
 
     func waitUntilReady() async {
-        // Wait for up to 5 seconds for the model to be ready
-        for _ in 0..<50 {
+        // Wait for up to 10 seconds for the model to be ready
+        for _ in 0..<100 {
             if isReady {
                 return
             }
